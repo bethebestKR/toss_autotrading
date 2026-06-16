@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from core.db import init_db
 from core.toss_client import TossClient
 from core.stock_universe import search, update_kr_stocks
+from core import status_server
 from strategies.strategy1_technical import Strategy1
 
 load_dotenv()
@@ -129,6 +130,7 @@ def _input_listener(strategy: Strategy1):
 
 def main():
     init_db()
+    status_server.start(port=8765)
     client = TossClient()
 
     accounts = client.get_accounts()
@@ -146,7 +148,7 @@ def main():
     try:
         while True:
             strategy.run_once()
-            time.sleep(60)
+            time.sleep(1)
     except KeyboardInterrupt:
         print("\n종료")
         sys.exit(0)

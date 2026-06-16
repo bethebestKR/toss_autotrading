@@ -5,12 +5,36 @@
 
 ## 전략 1 — 기술적 단타 (`strategy1_technical.py`) ← 현재 개발 중
 
-- 목적: 차트 데이터 기반 단기 매매 (당일~수일)
-- 데이터: 토스 API 캔들 (`1m`, `1d`) — 폴링 방식 (웹소켓 미지원)
-- 지표: pandas-ta 사용. MA, RSI, 볼린저밴드
-- 스케줄: 장중 1분 간격 실행
-- 대상: 국내 + 미국 주식
-- 전략 1 실거래 데이터를 충분히 쌓은 후 전략 2·3으로 이동
+- 목적: 1초 틱 기반 단기 매매
+- 데이터: `get_prices()`로 1초마다 현재가 폴링 → 내부 deque에 누적
+- 지표: pandas-ta — EMA5 / EMA20 / RSI14
+- 매수 조건: EMA5/EMA20 골든크로스 + RSI < 65
+- 매도 조건: 데드크로스 OR RSI > 75 OR 손절(-2%) OR 익절(+4%)
+- 워밍업: `warmup_ticks=60` 틱 쌓이기 전까지 신호 무시
+- 대상: 국내(숫자 코드) + 미국(알파벳 티커) 동시 지원
+
+### 내부 구조 (`Strategy1` 클래스)
+
+- `self._ticks` — symbol별 가격 deque (maxlen = warmup_ticks + 30)
+- `self._positions` — 보유 포지션 `{symbol: {order_id, buy_price}}`
+- `self._last_signals` — 마지막 계산된 신호 캐시 (dashboard용)
+- `run_once()` — 1초마다 호출. 활성 종목 현재가 일괄 조회 → `_process()` → `_update_status()`
+- `_process(symbol, price)` — 틱 누적 + 신호 계산 + 매수/매도 실행. 신호를 `_last_signals`에 저장
+- `_update_status(price_map)` — `core.status_server.update()`로 대시보드 상태 갱신. 장 마감 시에도 호출됨
+
+### 모듈 레벨 헬퍼
+
+- `_safe_float(v)` — numpy/pandas 스칼라를 Python float로 변환. NaN은 None 반환 (JSON 직렬화 안전)
+- `_calc_signals(prices)` — EMA5/EMA20/RSI14 계산 + 골든크로스/데드크로스 판별
+- `_in_session(session, now)` — 단일 세션 dict의 startTime~endTime 범위 체크
+- `is_market_open(client, symbol)` — preMarket / regularMarket / afterMarket 세 세션 중 하나라도 해당하면 True (결과 60초 캐시)
+  - 미국 (KST): 프리마켓 17:00~22:30 / 정규장 22:30~05:00 / 애프터마켓 05:00~08:50
+  - 국내 (KST): 프리마켓 08:00~09:00 / 정규장 09:00~15:30 / 애프터마켓 15:30~20:00
+
+### 대시보드 연동
+
+- `run_once()` 끝에서 항상 `_update_status()` 호출 → `localhost:8765/status` 실시간 갱신
+- `main.py`와 `paper_trade.py` 모두 `status_server.start(8765)` 기동 → `dashboard.html`로 확인 가능
 
 ## 전략 2 — 가치 분석 중장기 (`strategy2_fundamental.py`)
 

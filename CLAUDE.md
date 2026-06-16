@@ -14,8 +14,10 @@
 - `core/` — API 클라이언트, 주문 엔진, DB (각 CLAUDE.md 참고)
 - `strategies/` — 3가지 매매 전략 (각 CLAUDE.md 참고)
 - `docs/` — API 레퍼런스 (각 CLAUDE.md 참고)
-- `data/` — SQLite DB 파일 (trading.db)
-- `main.py` — 진입점 + APScheduler
+- `data/` — SQLite DB 파일 (trading.db), KRX 종목 캐시 (kr_stocks.csv), 페이퍼 리포트 JSON
+- `main.py` — 실거래 진입점. 실행 전 한글 종목 선택, 1초 폴링
+- `paper_trade.py` — 페이퍼 트레이딩 진입점. 가상 금액 입력 → 종목 선택 → 시뮬레이션. Ctrl+C 시 `data/paper_report_YYYY-MM-DD_HH-MM.json` 저장
+- `dashboard.html` — 실시간 대시보드. 브라우저에서 직접 열기. `localhost:8765/status` 1초 폴링 → 포지션·신호·최근거래 표시
 
 ## 작업 완료 보고 (필수)
 
@@ -46,3 +48,10 @@
 ```
 
 > 작업이 중단되거나 진행 중인 경우에는 보고하지 않는다. 명확히 완료된 작업에만 작성한다.
+
+## GitHub 푸시 규칙
+
+- **명시적으로 요청할 때만** push한다. 작업 완료 후 자동으로 push하지 않는다.
+- push 요청 시, 마지막 push 이후 완료된 작업들을 `git log`로 파악해 커밋 메시지에 정리해서 올린다.
+- 커밋 author 이메일: `vtr1844@naver.com` / 계정: `bethebestKR`
+- remote: `https://github.com/bethebestKR/toss_autotrading.git`

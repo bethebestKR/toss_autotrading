@@ -69,6 +69,15 @@ def save_performance(strategy: str, return_rate: float, day: str = None):
         )
 
 
+def get_recent_orders(limit: int = 10) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT created_at, symbol, side, price, quantity, status FROM orders ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_performance(strategy: str) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(

@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>전략1 대시보드</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0d1117;
+      color: #c9d1d9;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      padding: 24px;
+    }
+
+    h1 { font-size: 20px; color: #f0f6fc; margin-bottom: 6px; }
+    .meta { color: #8b949e; font-size: 12px; margin-bottom: 28px; }
+
+    .dot {
+      display: inline-block; width: 8px; height: 8px;
+      border-radius: 50%; background: #3fb950;
+      margin-right: 6px; vertical-align: middle;
+    }
+    .dot.off { background: #f85149; animation: none; }
+    .dot { animation: pulse 2s infinite; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; } 50% { opacity: 0.4; }
+    }
+
+    section { margin-bottom: 28px; }
+    h2 {
+      font-size: 11px; color: #8b949e;
+      text-transform: uppercase; letter-spacing: 0.08em;
+      margin-bottom: 10px; padding-bottom: 6px;
+      border-bottom: 1px solid #21262d;
+    }
+
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th {
+      text-align: left; color: #8b949e; font-weight: normal;
+      padding: 5px 16px 5px 0; font-size: 11px;
+      border-bottom: 1px solid #21262d;
+      white-space: nowrap; overflow: hidden;
+    }
+    td { padding: 9px 16px 9px 0; border-bottom: 1px solid #161b22; white-space: nowrap; overflow: hidden; }
+    tr:last-child td { border-bottom: none; }
+
+    .green { color: #3fb950; }
+    .red   { color: #f85149; }
+    .muted { color: #8b949e; }
+    .bold  { font-weight: bold; color: #f0f6fc; }
+
+    .badge {
+      display: inline-block; padding: 2px 8px;
+      border-radius: 10px; font-size: 11px;
+    }
+    .badge-buy    { background: #1a3a1f; color: #3fb950; }
+    .badge-sell   { background: #3a1a1a; color: #f85149; }
+    .badge-signal { background: #0d2137; color: #58a6ff; }
+    .badge-warn   { background: #2a1f0a; color: #d29922; }
+    .badge-muted  { background: #1c2128; color: #8b949e; }
+
+    .empty { color: #484f58; padding: 12px 0; font-size: 13px; }
+
+    .bar-wrap {
+      display: inline-block; background: #21262d;
+      border-radius: 3px; height: 5px; width: 72px;
+      vertical-align: middle; overflow: hidden;
+    }
+    .bar { height: 100%; background: #388bfd; transition: width 0.4s; }
+
+    .change-up   { color: #3fb950; }
+    .change-down { color: #f85149; }
+    .change-flat { color: #8b949e; }
+
+    .pnl-bar {
+      display: flex; gap: 16px; margin-bottom: 28px;
+    }
+    .pnl-card {
+      flex: 1; background: #161b22; border: 1px solid #21262d;
+      border-radius: 8px; padding: 14px 18px;
+    }
+    .pnl-card .label {
+      font-size: 11px; color: #8b949e; text-transform: uppercase;
+      letter-spacing: 0.08em; margin-bottom: 6px;
+    }
+    .pnl-card .value {
+      font-size: 22px; font-weight: bold; color: #f0f6fc;
+    }
+    .pnl-card .value.pos { color: #3fb950; }
+    .pnl-card .value.neg { color: #f85149; }
+    .pnl-card .value.zero { color: #8b949e; }
+    .pnl-card.total { border-color: #388bfd44; background: #0d1f38; }
+  </style>
+</head>
+<body>
+
+<h1>전략1 대시보드</h1>
+<div class="meta">
+  <span class="dot" id="dot"></span>
+  <span id="conn-label">연결 중...</span>
+  &nbsp;&nbsp;|&nbsp;&nbsp;마지막 업데이트: <span id="updated-at">—</span>
+</div>
+
+<div class="pnl-bar">
+  <div class="pnl-card" id="pnl-balance-card" style="display:none">
+    <div class="label">잔액</div>
+    <div class="value zero" id="pnl-balance">—</div>
+  </div>
+  <div class="pnl-card">
+    <div class="label">실현 손익</div>
+    <div class="value zero" id="pnl-realized">—</div>
+  </div>
+  <div class="pnl-card">
+    <div class="label">미실현 손익</div>
+    <div class="value zero" id="pnl-unrealized">—</div>
+  </div>
+  <div class="pnl-card total">
+    <div class="label">합계</div>
+    <div class="value zero" id="pnl-total">—</div>
+  </div>
+</div>
+
+<section>
+  <h2>보유 포지션</h2>
+  <div id="positions-wrap"><div class="empty">포지션 없음</div></div>
+</section>
+
+<section>
+  <h2>모니터링 종목</h2>
+  <div id="watching-wrap"><div class="empty">대기 중</div></div>
+</section>
+
+<section>
+  <h2>최근 거래</h2>
+  <div id="orders-wrap"><div class="empty">거래 내역 없음</div></div>
+</section>
+
+<script>
+const API = 'http://localhost:8765/status';
+
+function num(n, dec = 0) {
+  if (n == null) return '—';
+  return Number(n).toLocaleString('ko-KR', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+}
+
+function pct(n) {
+  if (n == null) return '—';
+  const s = n >= 0 ? '+' : '';
+  const cls = n > 0 ? 'change-up' : n < 0 ? 'change-down' : 'change-flat';
+  return `<span class="${cls}">${s}${Number(n).toFixed(2)}%</span>`;
+}
+
+function badge(text) {
+  if (!text) return '';
+  let cls = 'badge-muted';
+  if (text.includes('매수') || text.includes('골든')) cls = 'badge-signal';
+  else if (text.includes('매도') || text.includes('데드'))  cls = 'badge-sell';
+  else if (text.includes('과열'))  cls = 'badge-warn';
+  else if (text.includes('워밍업')) cls = 'badge-muted';
+  return `<span class="badge ${cls}">${text}</span>`;
+}
+
+function renderPositions(data) {
+  const wrap = document.getElementById('positions-wrap');
+  const items = Object.entries(data || {});
+  if (!items.length) { wrap.innerHTML = '<div class="empty">포지션 없음</div>'; return; }
+
+  const rows = items.map(([sym, p]) => `
+    <tr>
+      <td class="bold">${sym}</td>
+      <td>${num(p.buy_price, 0)}</td>
+      <td>${num(p.current_price, p.current_price < 1000 ? 2 : 0)}</td>
+      <td>${pct(p.change_pct)}</td>
+      <td class="green">${num(p.take_profit_price, p.take_profit_price < 1000 ? 2 : 0)}</td>
+      <td class="red">${num(p.stop_loss_price, p.stop_loss_price < 1000 ? 2 : 0)}</td>
+      <td class="muted">${p.signals?.rsi != null ? Number(p.signals.rsi).toFixed(1) : '—'}</td>
+      <td>${badge(p.signal_text)}</td>
+    </tr>`).join('');
+
+  wrap.innerHTML = `<table>
+    <thead><tr>
+      <th style="width:110px">종목</th><th style="width:90px">매수가</th><th style="width:90px">현재가</th><th style="width:90px">손익</th>
+      <th style="width:120px">익절가 (+4%)</th><th style="width:120px">손절가 (−2%)</th><th style="width:55px">RSI</th><th>신호</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function renderWatching(data) {
+  const wrap = document.getElementById('watching-wrap');
+  const items = Object.entries(data || {});
+  if (!items.length) { wrap.innerHTML = '<div class="empty">대기 중</div>'; return; }
+
+  const rows = items.map(([sym, w]) => {
+    const wp = w.warmup_pct ?? 0;
+    const warmupHtml = wp < 100
+      ? `<span class="bar-wrap"><span class="bar" style="width:${wp}%"></span></span> <span class="muted">${wp}%</span>`
+      : `<span class="green">완료</span>`;
+    const closed = !w.market_open ? ' <span class="muted">(장 마감)</span>' : '';
+    const price = w.current_price;
+    return `<tr>
+      <td class="bold">${sym}${closed}</td>
+      <td>${price != null ? num(price, price < 1000 ? 2 : 0) : '—'}</td>
+      <td class="muted">${w.signals?.rsi != null ? Number(w.signals.rsi).toFixed(1) : '—'}</td>
+      <td>${badge(w.signal_text)}</td>
+      <td>${warmupHtml}</td>
+    </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `<table>
+    <thead><tr>
+      <th style="width:160px">종목</th><th style="width:90px">현재가</th><th style="width:55px">RSI</th><th style="width:120px">신호</th><th>워밍업</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function renderPnl(summary) {
+  function fmt(v) {
+    if (v == null) return { text: '—', cls: 'zero' };
+    const sign = v >= 0 ? '+' : '';
+    return {
+      text: sign + num(v) + '원',
+      cls: v > 0 ? 'pos' : v < 0 ? 'neg' : 'zero',
+    };
+  }
+  const r = fmt(summary?.realized);
+  const u = fmt(summary?.unrealized);
+  const t = fmt(summary?.total);
+  document.getElementById('pnl-realized').textContent   = r.text;
+  document.getElementById('pnl-realized').className     = 'value ' + r.cls;
+  document.getElementById('pnl-unrealized').textContent = u.text;
+  document.getElementById('pnl-unrealized').className   = 'value ' + u.cls;
+  document.getElementById('pnl-total').textContent      = t.text;
+  document.getElementById('pnl-total').className        = 'value ' + t.cls;
+
+  const balanceCard = document.getElementById('pnl-balance-card');
+  const balanceEl   = document.getElementById('pnl-balance');
+  if (summary?.balance != null) {
+    balanceCard.style.display = '';
+    balanceEl.textContent = num(summary.balance) + '원';
+    balanceEl.className   = 'value zero';
+  } else {
+    balanceCard.style.display = 'none';
+  }
+}
+
+function renderOrders(list) {
+  const wrap = document.getElementById('orders-wrap');
+  if (!list || !list.length) { wrap.innerHTML = '<div class="empty">거래 내역 없음</div>'; return; }
+
+  const hasPnl = list.some(o => o.pnl != null);
+
+  const rows = list.map(o => {
+    const isBuy = o.side === 'BUY';
+    const sideBadge = `<span class="badge ${isBuy ? 'badge-buy' : 'badge-sell'}">${isBuy ? '매수' : '매도'}</span>`;
+    const time = (o.created_at || '').replace('T', ' ').split('.')[0].split(' ')[1] || o.created_at || '—';
+    const price = o.price ? num(parseFloat(o.price), parseFloat(o.price) < 1000 ? 2 : 0) : '시장가';
+    const pnlCell = hasPnl
+      ? `<td>${o.pnl != null ? pct(o.pnl_pct) + ' <span class="muted">('+num(o.pnl)+'원)</span>' : '<span class="muted">—</span>'}</td>`
+      : '';
+    return `<tr>
+      <td class="muted">${time}</td>
+      <td class="bold">${o.symbol}</td>
+      <td>${sideBadge}</td>
+      <td>${price}</td>
+      <td class="muted">${o.quantity}주</td>
+      ${pnlCell}
+    </tr>`;
+  }).join('');
+
+  const pnlHeader = hasPnl ? '<th>손익</th>' : '';
+  wrap.innerHTML = `<table>
+    <thead><tr>
+      <th style="width:80px">시간</th><th style="width:100px">종목</th><th style="width:65px">방향</th><th style="width:90px">가격</th><th style="width:65px">수량</th>${pnlHeader}
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function setConn(ok) {
+  document.getElementById('dot').className = 'dot' + (ok ? '' : ' off');
+  document.getElementById('conn-label').textContent = ok ? '연결됨' : '연결 끊김 — main.py 실행 중?';
+}
+
+async function refresh() {
+  try {
+    const res = await fetch(API, { cache: 'no-store' });
+    if (!res.ok) throw new Error();
+    const d = await res.json();
+    setConn(true);
+    document.getElementById('updated-at').textContent = d.updated_at || '—';
+    renderPnl(d.pnl_summary);
+    renderPositions(d.positions);
+    renderWatching(d.watching);
+    renderOrders(d.recent_orders);
+  } catch {
+    setConn(false);
+  }
+}
+
+refresh();
+setInterval(refresh, 1000);
+</script>
+</body>
+</html>

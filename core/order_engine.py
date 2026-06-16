@@ -7,7 +7,7 @@ class OrderEngine:
         self.client = client
         self.strategy = strategy
 
-    def buy(self, symbol: str, quantity: str, price: str = None) -> dict | None:
+    def buy(self, symbol: str, quantity: str, price: str = None, current_price: float = None) -> dict | None:
         """
         지정가(price 전달 시) 또는 시장가로 매수.
         매수 가능 금액 부족 시 None 반환.
@@ -38,7 +38,7 @@ class OrderEngine:
         print(f"[{self.strategy}] 매수 주문 → {symbol} {quantity}주 @ {price or '시장가'} (orderId: {result['orderId']})")
         return result
 
-    def sell(self, symbol: str, quantity: str = None, price: str = None) -> dict | None:
+    def sell(self, symbol: str, quantity: str = None, price: str = None, current_price: float = None) -> dict | None:
         """
         지정가(price 전달 시) 또는 시장가로 매도.
         quantity 미전달 시 판매 가능 수량 전량 매도.
