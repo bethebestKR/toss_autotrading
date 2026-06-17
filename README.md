@@ -9,9 +9,9 @@
 
 | 항목 | 값 |
 |------|-----|
-| 마지막 업데이트 | <!-- DYNAMIC:last_updated -->2026-06-18 01:22 KST<!-- /DYNAMIC --> |
-| 총 커밋 수 | <!-- DYNAMIC:commit_count -->4<!-- /DYNAMIC --> |
-| 마지막 커밋 | <!-- DYNAMIC:last_commit -->docs: 포트폴리오 README 추가 및 push 시 자동 업데이트 훅 설정<!-- /DYNAMIC --> |
+| 마지막 업데이트 | <!-- DYNAMIC:last_updated -->2026-06-18 01:39 KST<!-- /DYNAMIC --> |
+| 총 커밋 수 | <!-- DYNAMIC:commit_count -->6<!-- /DYNAMIC --> |
+| 마지막 커밋 | <!-- DYNAMIC:last_commit -->feat: ATR 기반 손절/익절 개선, 장 마감 강제 청산, 배치 학습 전환<!-- /DYNAMIC --> |
 
 ---
 
