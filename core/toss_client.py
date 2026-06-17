@@ -54,6 +54,9 @@ class TossClient:
             resp = requests.request(method, url, headers=headers, **kwargs)
             if resp.status_code == 429:
                 retry_after = int(resp.headers.get("Retry-After", 1))
+                limit     = resp.headers.get("X-RateLimit-Limit", "?")
+                remaining = resp.headers.get("X-RateLimit-Remaining", "?")
+                print(f"[RateLimit] 429 — 한도:{limit} 남음:{remaining} {retry_after}초 대기 ({path})")
                 time.sleep(retry_after)
                 continue
             resp.raise_for_status()

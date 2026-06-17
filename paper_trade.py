@@ -2,7 +2,10 @@
 페이퍼 트레이딩 실행 파일.
 실제 주문 없이 가상 금액으로 전략1을 테스트한다.
 종료(Ctrl+C) 시 data/paper_report_YYYY-MM-DD_HH-MM.json 저장.
+
+--test : 장 시간 체크 우회 (장 외 시간 테스트용). warmup 20틱으로 단축.
 """
+import argparse
 import os
 import sys
 import json
@@ -18,6 +21,8 @@ from core.stock_universe import search
 from core import status_server
 from main import select_symbols_interactive, _input_listener
 from strategies.strategy1_technical import Strategy1
+from strategies.stock_scanner import StockScanner
+from strategies.trade_analyzer import print_report, suggest_params, generate_report
 
 load_dotenv()
 
@@ -114,6 +119,18 @@ def _print_final(engine: PaperEngine, strategy: Strategy1):
 
 
 def main():
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--test", action="store_true", help="장 시간 체크 우회 (장 외 시간 테스트용)")
+    parser.add_argument("--duration", type=int, default=0, help="N초 후 자동 종료 (0=무제한)")
+    args, _ = parser.parse_known_args()
+
+    if args.test:
+        import strategies.strategy1_technical as _s1
+        import strategies.stock_scanner as _sc
+        _s1.is_market_open = lambda *a, **kw: True
+        _sc.is_market_open = lambda *a, **kw: True
+        print("[TEST MODE] 장 시간 체크 우회 — 항상 장 중으로 처리합니다\n")
+
     init_db()
     status_server.start(port=8765)
     client = TossClient()
@@ -121,26 +138,59 @@ def main():
     virtual_cash = _ask_cash()
     print(f"\n가상 투자금: {virtual_cash:,.0f}원\n")
 
-    symbols = select_symbols_interactive()
-    print(f"\n대상 종목: {symbols}")
+    symbols, scanner_mode = select_symbols_interactive()
+    print(f"\n대상 종목: {symbols or '(스캐너가 자동 선별)'}")
 
+    # --test: 20초마다 Claude 결정 (기본 60초 단축)
+    test_config = {"decision_interval": 20} if args.test else {}
     engine   = PaperEngine(virtual_cash=virtual_cash)
-    strategy = Strategy1(client=client, symbols=symbols, engine=engine)
+    strategy = Strategy1(client=client, symbols=symbols, engine=engine, config=test_config)
+
+    claude_on = strategy.cfg.get("use_claude", False)
+    claude_model = strategy.cfg.get("claude_model", "")
+    if claude_on:
+        print(f"  [Claude AI] 활성화 — 모델: {claude_model}")
+        print(f"  [Claude AI] 매수/매도 신호 발생 시 Claude가 최종 판단합니다")
+        print(f"  [Claude AI] 손절(-{strategy.cfg['stop_loss_pct']}%)은 Claude 우회 즉시 실행")
+    else:
+        print("  [Claude AI] 비활성화 — Python 규칙으로만 매매합니다")
+
+    if scanner_mode:
+        scanner = StockScanner(client=client, strategy=strategy)
+        scanner.start()
 
     # 백그라운드: 10초마다 상태 출력
     threading.Thread(target=_status_printer, args=(strategy, engine), daemon=True).start()
     # 백그라운드: 실행 중 종목 추가/제거
     threading.Thread(target=_input_listener, args=(strategy,), daemon=True).start()
 
-    print("\n페이퍼 트레이딩 시작 (Ctrl+C로 종료 및 리포트 저장)\n")
+    deadline = (time.time() + args.duration) if args.duration > 0 else None
+    if deadline:
+        print(f"\n페이퍼 트레이딩 시작 ({args.duration}초 후 자동 종료)\n")
+    else:
+        print("\n페이퍼 트레이딩 시작 (Ctrl+C로 종료 및 리포트 저장)\n")
     try:
         while True:
+            if deadline and time.time() >= deadline:
+                print(f"\n[자동 종료] {args.duration}초 경과")
+                break
             strategy.run_once()
             time.sleep(1)
     except KeyboardInterrupt:
         pass
 
     _print_final(engine, strategy)
+
+    # Phase 3 — 페이퍼 트레이딩 통계 분석
+    if engine.trade_log:
+        print_report(paper_log=engine.trade_log)
+        report = generate_report(paper_log=engine.trade_log)
+        sug = suggest_params(report, strategy.cfg)
+        if sug:
+            print("[파라미터 조정 제안]")
+            for k, v in sug.items():
+                print(f"  {k}: {v}")
+
     path = _save_report(engine, strategy)
     print(f"\n리포트 저장됨: {path}")
     print("노션에 올리려면 Claude에게 '노션에 올려줘'라고 하세요.")

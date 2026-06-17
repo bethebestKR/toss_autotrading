@@ -3,50 +3,129 @@
 3가지 매매 전략. 각 전략은 `core/order_engine.py`의 `OrderEngine`으로 주문을 실행한다.
 **외부 재무 데이터 API(DART, yfinance 등)는 사용하지 않는다. 토스 API만 사용.**
 
-## 전략 1 — 기술적 단타 (`strategy1_technical.py`) ← 현재 개발 중
+## 전략 1 — Claude AI 직접 판단 (`strategy1_technical.py`) ✅ Phase 1~4 완료
 
-- 목적: 1초 틱 기반 단기 매매
-- 데이터: `get_prices()`로 1초마다 현재가 폴링 → 내부 deque에 누적
-- 지표: pandas-ta — EMA5 / EMA20 / RSI14
-- 매수 조건: EMA5/EMA20 골든크로스 + RSI < 65
-- 매도 조건: 데드크로스 OR RSI > 75 OR 손절(-2%) OR 익절(+4%)
-- 워밍업: `warmup_ticks=60` 틱 쌓이기 전까지 신호 무시
+- 목적: 1분봉 캔들 데이터를 Claude Sonnet이 직접 보고 매수/매도 종목·시점 결정
+- 매 1초: `get_prices()`로 현재가 폴링 → 보유 포지션 손절/이상감지 체크
+- 매 60초(기본): 최대 10종목의 1분봉 30개를 병렬 수집 → Claude에 일괄 판단 요청
+- Claude가 BUY/SELL/HOLD + 근거 + 확신도 반환 → confidence ≥ 0.6이면 실행
+- 손절(-2%) / 급락(5%) / 슬리피지: Claude 우회 — Python 즉시 처리 (안전망)
+- 거래 종료 시: Claude가 결과 분석 → `data/claude_strategy.md`에 규칙 누적 (자가학습)
 - 대상: 국내(숫자 코드) + 미국(알파벳 티커) 동시 지원
+
+### Claude AI가 하는 역할
+
+| 상황 | 주기 | Claude에게 전달하는 것 | Claude 결정 |
+|------|------|----------------------|------------|
+| 정기 배치 판단 | 60초마다 | 최대 10종목 × 1분봉 30개 OHLCV + 전략 규칙 | BUY/SELL/HOLD + 근거 + 확신도 |
+| 거래 결과 분석 | 거래 종료 시 | 매수가·매도가·수익률·매수 시점 캔들 스냅샷 | 새 전략 규칙 1건 추출 → 파일 저장 |
+| 손절(-2%) | **Python이 직접 처리** | Claude에 묻지 않음 | 즉시 강제 청산 |
+| 급락(5%) / 슬리피지 | **Python이 직접 처리** | Claude에 묻지 않음 | 비상 정지 → 전 포지션 청산 |
+
+### 비동기 구조 (ThreadPoolExecutor)
+
+- Claude API 호출은 `ThreadPoolExecutor(max_workers=6)`로 백그라운드 실행
+- 폴링 루프(1초)를 **절대 막지 않는다**
+- `_decision_future` — 배치 판단 Future (완료 시 `_check_decision_future()`에서 처리)
+- 캔들 수집도 내부 `ThreadPoolExecutor`로 10종목 병렬 호출
 
 ### 내부 구조 (`Strategy1` 클래스)
 
-- `self._ticks` — symbol별 가격 deque (maxlen = warmup_ticks + 30)
-- `self._positions` — 보유 포지션 `{symbol: {order_id, buy_price}}`
-- `self._last_signals` — 마지막 계산된 신호 캐시 (dashboard용)
-- `run_once()` — 1초마다 호출. 활성 종목 현재가 일괄 조회 → `_process()` → `_update_status()`
-- `_process(symbol, price)` — 틱 누적 + 신호 계산 + 매수/매도 실행. 신호를 `_last_signals`에 저장
-- `_update_status(price_map)` — `core.status_server.update()`로 대시보드 상태 갱신. 장 마감 시에도 호출됨
+- `self._positions` — 보유 포지션 `{symbol: {order_id, buy_price, quantity, ticks_since_buy, candle_snapshot}}`
+- `self._prev_prices` — 전 틱 가격 (급락 감지용)
+- `self._emergency_stop` — True이면 run_once()에서 전 포지션 즉시 청산 후 리턴
+- `self._executor` — ThreadPoolExecutor (Claude API 비동기 호출)
+- `self._decision_future` — 배치 판단 Future
+- `self._decision_tick` — 마지막 배치 판단 후 경과 틱 수
+- `run_once()` — 1초마다 호출. 비상정지 → 현재가 조회 → `_check_decision_future()` → 포지션 스톱로스 → 60초마다 배치 제출
+- `_fetch_and_decide(symbols)` — executor에서 실행. 캔들 병렬 수집 + Claude 호출 → (decisions, snapshots) 반환
+- `_check_decision_future(price_map)` — 완료된 Future 처리. BUY→`_do_buy`, SELL→`_do_sell`
+- `_check_position(symbol, price)` — 이상감지 + 손절 체크 (매 틱)
+- `_do_buy(symbol, price, qty_str, candle_snapshot)` — 매수 실행 + 포지션 등록
+- `_do_sell(symbol, price, reason)` — 매도 실행 + `_analyze_and_save()` 비동기 제출
+- `_analyze_and_save(...)` — 거래 결과 Claude 분석 → `claude_strategy.md` 규칙 추가
+- `_calc_quantity(symbol, price)` — 매수가능금액 × max_position_pct / 종목 수 → 동적 수량
+- `_check_anomaly(...)` — 급락(단일 틱 -5%) / 슬리피지(매수 후 5틱 내 -1%) 이상 감지
+- `_liquidate_all()` — 비상정지 시 전 포지션 시장가 청산
+- `_update_status(price_map)` — `core.status_server.update()`로 대시보드 상태 갱신
 
-### 모듈 레벨 헬퍼
+### DEFAULT_CONFIG 주요 키
 
-- `_safe_float(v)` — numpy/pandas 스칼라를 Python float로 변환. NaN은 None 반환 (JSON 직렬화 안전)
-- `_calc_signals(prices)` — EMA5/EMA20/RSI14 계산 + 골든크로스/데드크로스 판별
-- `_in_session(session, now)` — 단일 세션 dict의 startTime~endTime 범위 체크
-- `is_market_open(client, symbol)` — preMarket / regularMarket / afterMarket 세 세션 중 하나라도 해당하면 True (결과 60초 캐시)
-  - 미국 (KST): 프리마켓 17:00~22:30 / 정규장 22:30~05:00 / 애프터마켓 05:00~08:50
-  - 국내 (KST): 프리마켓 08:00~09:00 / 정규장 09:00~15:30 / 애프터마켓 15:30~20:00
+| 키 | 기본값 | 설명 |
+|----|--------|------|
+| `max_position_pct` | 0.20 | 종목당 최대 배분 비율 |
+| `stop_loss_pct` | 2.0 | 손절 임계값 (%) — Claude 우회 |
+| `take_profit_pct` | 4.0 | 익절 임계값 (%) — 참고용 |
+| `crash_pct` | 5.0 | 단일 틱 급락 감지 (%) |
+| `slippage_pct` | 1.0 | 매수 직후 슬리피지 감지 (%) |
+| `slippage_ticks` | 5 | 슬리피지 감시 구간 (틱) |
+| `use_claude` | True | False 시 Claude 호출 안 함 |
+| `claude_model` | `claude-sonnet-4-6` | Claude 모델 (Sonnet) |
+| `claude_min_confidence` | 0.6 | 이 미만이면 HOLD로 처리 |
+| `decision_interval` | 60 | Claude 배치 판단 주기 (초) |
+| `max_symbols` | 10 | 배치당 최대 종목 수 |
 
-### 대시보드 연동
+### 환경 설정
 
-- `run_once()` 끝에서 항상 `_update_status()` 호출 → `localhost:8765/status` 실시간 갱신
-- `main.py`와 `paper_trade.py` 모두 `status_server.start(8765)` 기동 → `dashboard.html`로 확인 가능
+`.env` 파일에 `ANTHROPIC_API_KEY=sk-ant-...` 추가 필요.
+없으면 시작 시 경고 출력 + `use_claude` 자동 False 전환.
 
-## 전략 2 — 가치 분석 중장기 (`strategy2_fundamental.py`)
+### 자가 학습 전략 파일
 
-- 목적: 기업 공시 문서(사업보고서 등) 분석 → 가치 종목 추천 → 2주 이상 보유
-- 방식: 사용자가 재무 문서를 직접 제공 → Claude가 분석 → 종목 추천 → 사용자 승인 후 토스 API 매수
+`data/claude_strategy.md` — 거래 결과마다 Claude가 규칙 추출·누적.
+다음 배치 판단 시 system prompt에 포함되어 과거 학습 반영.
+
+구조:
+```
+## 매수 규칙 (BUY)   — [B001][신뢰도: 높음] ...
+## 매도 규칙 (SELL)  — [S001] ...
+## 회피 패턴 (AVOID) — [A001] ...
+```
+
+---
+
+## `core/claude_trader.py` — Claude AI 판단 모듈
+
+- Lazy-init: `ANTHROPIC_API_KEY` 없으면 import 시점에 오류 안 남
+- `load_strategy_rules()` — `data/claude_strategy.md` 읽기 (없으면 템플릿 생성)
+- `append_strategy_rule(category, rule_text)` — BUY/SELL/AVOID 섹션에 규칙 추가
+- `fmt_candles(symbol, candle_data)` — 토스 API 캔들 dict → Claude용 텍스트 (최근 30봉)
+- `ask_trade_decision(candles_by_symbol, strategy_rules, model)` → `list[{symbol, action, reason, confidence}]`
+- `ask_analyze_trade(symbol, buy_price, sell_price, pnl_pct, exit_reason, candle_snapshot, strategy_rules, model)` → `(category, rule_text) | None`
+- 캔들 필드명: `openPrice` / `highPrice` / `lowPrice` / `closePrice` / `volume` / `timestamp`
+
+---
+
+## Phase 2 보조 모듈 — `stock_scanner.py` ✅
+
+- `StockScanner(client, strategy, config)` — 3분 주기 백그라운드 스캔
+- 유니버스: `_KR_UNIVERSE` (KOSPI 상위 20) + `_US_UNIVERSE` (미국 주요 30)
+- 스코어링 (0~4점): 모멘텀 + 변동성 + 거래량 급증 + 매수잔량 → 2점 이상이면 편입
+- `_check_volume_surge`, `_check_orderbook_bias` — stock_scanner.py 내부 함수 (strategy1과 분리)
+- `start()` — 백그라운드 스레드 시작, `stop()` — 정지
+- watchlist 변경은 `core/db.py`의 `watchlist`, `watchlist_log` 테이블에 기록
+- `main.py` 또는 `paper_trade.py` 실행 후 `scan` 입력 시 활성화
+
+---
+
+## Phase 3 보조 모듈 — `trade_analyzer.py` ✅
+
+- `generate_report(strategy, days, paper_log)` — 승률·손익비·RSI별 통계 dict 반환
+- `print_report(...)` — 콘솔 포맷 출력
+- `suggest_params(report, current_config)` — 파라미터 조정 제안 dict 반환
+- 실행 중 명령어: `report [일수]`, `suggest`
+- 페이퍼 트레이딩 종료 시 자동 실행
+
+---
+
+## 전략 2 — 가치 분석 중장기 (`strategy2_fundamental.py`) 🔜
+
+- 목적: 기업 공시 문서 분석 → 가치 종목 추천 → 2주 이상 보유
+- 방식: 사용자가 재무 문서 제공 → Claude 분석 → 종목 추천 → 승인 후 토스 API 매수
 - 분석 지표: 매출성장률, 영업이익률, 순이익, ROE, 부채비율
-- 외부 API 없음. 문서 입력 + 토스 API만 사용
 
-## 전략 3 — 퀀트팩터 장기 (`strategy3_quant.py`)
+## 전략 3 — 퀀트팩터 장기 (`strategy3_quant.py`) 🔜
 
 - 목적: 팩터 복합 점수로 상위 N종목 선별, 분기 리밸런싱
-- 방식:
-  - 모멘텀: 토스 API 일봉 캔들로 직접 계산
-  - Value/Quality: 사용자가 제공한 재무 문서에서 추출
-- 외부 API 없음. 토스 API 시세 + 문서 입력 방식
+- 모멘텀: 토스 API 일봉 캔들 6~12개월 수익률
+- Value/Quality: 사용자 제공 재무 문서 추출

@@ -5,3 +5,4 @@ pandas-ta
 APScheduler
 yfinance
 dart-fss
+anthropic

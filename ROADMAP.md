@@ -26,42 +26,64 @@
 
 ---
 
-#### Phase 1 — Claude 감시 하 자동매매 (현재 단계)
-**목적**: 사용자가 종목을 입력하면 Python이 차트 지표 기반으로 자동 매수/매도.
-Claude는 장 중 신호·포지션·수익률을 실시간 모니터링하며 이상 감지 시 개입.
+#### Phase 1 — Claude AI 실시간 판단 자동매매 ✅ 완료
+**목적**: 사용자가 종목을 입력하면 Claude AI가 기술적 지표를 보고 매수/매도를 판단.
 
 - [x] 장 시간 체크 (국내/미국 `market_calendar` 활용)
 - [x] 캔들 데이터 수집 및 pandas-ta 지표 계산 (EMA5/EMA20 + RSI14)
-- [x] 매수/매도 조건 → `OrderEngine` 호출 (골든크로스+RSI / 데드크로스+손절/익절)
-- [x] 1분 폴링 루프 (`main.py`)
+- [x] 골든크로스+RSI 신호 → Claude AI에게 매수 판단 요청 → BUY면 실행
+- [x] 손절(-2%): Claude 우회 — 즉시 강제 청산 (안전망)
+- [x] Claude 호출은 비동기(ThreadPoolExecutor) — 폴링 루프(1초) 블로킹 없음
+- [x] 포지션 사이징: 매수가능금액 × `max_position_pct` / 종목 수 → 동적 수량 계산
+- [x] 비상 정지: 단일 틱 급락(5%) / 슬리피지(5틱 내 -1%) 감지 → 전 포지션 청산
 - [ ] 실거래 데이터 DB 축적 및 수익률 확인 (장 중 실행 필요)
-- [ ] 포지션 사이징: 매수 시점마다 토스 API로 매수가능금액 조회 → Claude가 종목 신호 강도·현재 보유 종목 수·총 자산 대비 비중 고려해 몇 주 살지 결정 (1주 고정 제거)
-- [ ] Claude 감시 인터페이스: 실시간 신호·포지션 요약 → 이상 감지(급락, 슬리피지 초과) 시 알림/중단
 
 ---
 
-#### Phase 2 — Claude 종목 선별 자동화
-**목적**: 사용자가 종목을 직접 입력하지 않아도 됨.
-장 중 실시간 분봉을 지속 스캔해 조건 충족 종목을 즉시 편입하고, 식어버린 종목은 바로 이탈.
-단타 특성상 하루에도 여러 번 watchlist가 바뀔 수 있다.
+#### Phase 4 — Claude AI 직접 판단 아키텍처 전환 ✅ 완료
+**목적**: Python이 사전 필터링 후 Claude에게 승인 받는 구조 → Claude가 원시 캔들 데이터를 직접 보고 종목·시점을 판단. 거래 결과를 자가학습해 전략 파일에 누적.
 
-- [ ] 스캔 대상 풀 정의 (KOSPI200 / NASDAQ100 등 유니버스 고정)
-- [ ] 장 중 n분 주기 분봉 스캔: 현재 분봉 기준 필터 (거래량 급증, 단기 모멘텀, 변동성 확대)
-- [ ] 조건 충족 시 `watchlist` DB 테이블에 즉시 편입 → 전략1 폴링 루프가 바로 매매 대상으로 인식
-- [ ] 모멘텀 소멸 / 조건 미달 시 즉시 이탈 (보유 중이면 청산 신호 우선 처리 후 제거)
-- [ ] 편입/이탈 사유·시점·당시 지표값 DB 기록 (추후 피드백 학습 재료)
-- [ ] 스캔 주기와 watchlist 최대 종목 수 파라미터화 (과부하 방지)
-- [ ] 종목 편입 시 포지션 사이징 연계: 잔고·기존 보유 분산도 반영해 해당 종목에 얼마나 배분할지 결정
+- [x] `core/claude_trader.py` 전면 재작성
+  - `ask_trade_decision(candles_by_symbol, strategy_rules)` — 10종목 1분봉 → 일괄 BUY/SELL/HOLD
+  - `ask_analyze_trade(...)` — 거래 결과 분석 → 규칙 추출
+  - `load_strategy_rules()` / `append_strategy_rule(category, rule)` — 전략 파일 관리
+  - `fmt_candles(symbol, data)` — 토스 API 캔들 → Claude용 텍스트
+- [x] `strategies/strategy1_technical.py` 리팩토링
+  - EMA/RSI/크로스 신호 로직 제거 (pandas-ta 의존성 제거)
+  - 60초마다 10종목 캔들 병렬 수집 → Claude Sonnet 일괄 판단 (비동기)
+  - 거래 종료 시 `_analyze_and_save()` 비동기 제출 → 전략 파일 업데이트
+  - 스톱로스·급락·슬리피지는 Python 직접 처리 유지
+- [x] `data/claude_strategy.md` — 자가학습 전략 규칙 파일 (BUY/SELL/AVOID 섹션)
+- [x] `strategies/stock_scanner.py` — strategy1 의존성 제거 (`_check_volume_surge` 등 내부화)
+- [x] `paper_trade.py` — scan 모드 지원 추가, `--test`/`--duration` 옵션 추가
+- [ ] 미장 실거래 데이터로 학습 규칙 누적 검증
 
 ---
 
-#### Phase 3 — 데이터 피드백 & 학습
-**목적**: 과거 매매 데이터를 바탕으로 전략 파라미터를 개선하고 Claude가 인사이트 제공.
+#### Phase 2 — Claude 종목 선별 자동화 ✅ 완료
+**목적**: 사용자가 종목을 직접 입력하지 않아도 됨. `strategies/stock_scanner.py`
 
-- [ ] 거래 결과 자동 태깅 (진입 신호 종류, 당시 시장 국면, 수익/손실)
-- [ ] 정기 분석 리포트: 신호별 승률·손익비·평균 보유시간 집계
-- [ ] Claude 피드백 루프: 수익 패턴 vs 손실 패턴 비교 → 파라미터 조정 제안 (EMA 기간, RSI 임계값, 손절 %）
-- [ ] 백테스트 연계: 제안된 파라미터를 페이퍼 트레이딩으로 검증 후 실거래 반영
+- [x] 스캔 유니버스: KOSPI 시총 상위 20 + US 주요 30종목 (`_KR_UNIVERSE`, `_US_UNIVERSE`)
+- [x] 3분 주기 분봉 스캔: 모멘텀(0.3%↑) + 변동성(1m 캔들 범위) + 거래량 급증 + 매수잔량 (0~4점)
+- [x] 조건 충족 시 `watchlist` DB 테이블 편입 → `strategy.symbols` 실시간 반영
+- [x] 모멘텀 소멸 시 즉시 이탈 (보유 중이면 청산 후 제거)
+- [x] 편입/이탈 사유·점수·지표값 `watchlist_log` DB 기록
+- [x] `scan_interval_sec`, `max_watchlist` 파라미터화
+- [x] 포지션 사이징 연계: Phase 1 `_calc_quantity()` 공유
+
+**실행**: `python main.py` → 종목 입력 프롬프트에서 `scan` 입력
+
+---
+
+#### Phase 3 — 데이터 피드백 & 학습 ✅ 완료
+**목적**: 과거 매매 데이터를 바탕으로 전략 파라미터를 개선. `strategies/trade_analyzer.py`
+
+- [x] 거래 결과 자동 태깅: 매수 시 `signal_type`, `entry_rsi`, `entry_ema_gap`, `volume_ratio`, `bid_ratio` DB 저장
+- [x] 분석 리포트: 승률·손익비·평균 보유시간·RSI 구간별 성과 집계 (`print_report()`)
+- [x] 파라미터 조정 제안: 승률/손익비/RSI 구간 분석 기반 규칙 제안 (`suggest_params()`)
+- [x] 페이퍼 트레이딩 종료 시 자동 분석 출력
+- [x] 실행 중 `report [일수]`, `suggest` 명령어로 즉시 조회
+- [ ] 백테스트 연계: 제안 파라미터를 페이퍼로 검증 (추후)
 
 ---
 

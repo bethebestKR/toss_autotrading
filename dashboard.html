@@ -144,6 +144,27 @@ function num(n, dec = 0) {
   return Number(n).toLocaleString('ko-KR', { minimumFractionDigits: dec, maximumFractionDigits: dec });
 }
 
+function isUS(sym) {
+  return /^[A-Za-z][A-Za-z.\-]*$/.test(sym);
+}
+
+function fmtPrice(sym, val) {
+  if (val == null) return '—';
+  return isUS(sym)
+    ? '$' + Number(val).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : num(val, 0) + '원';
+}
+
+function fmtPnl(sym, pnl, pnl_pct) {
+  if (pnl == null) return '<span class="muted">—</span>';
+  const unit = isUS(sym) ? '$' : '원';
+  const sign = pnl >= 0 ? '+' : '';
+  const pnlStr = isUS(sym)
+    ? sign + '$' + Math.abs(Number(pnl)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : sign + num(pnl) + unit;
+  return pct(pnl_pct) + ' <span class="muted">(' + pnlStr + ')</span>';
+}
+
 function pct(n) {
   if (n == null) return '—';
   const s = n >= 0 ? '+' : '';
@@ -169,11 +190,11 @@ function renderPositions(data) {
   const rows = items.map(([sym, p]) => `
     <tr>
       <td class="bold">${sym}</td>
-      <td>${num(p.buy_price, 0)}</td>
-      <td>${num(p.current_price, p.current_price < 1000 ? 2 : 0)}</td>
+      <td>${fmtPrice(sym, p.buy_price)}</td>
+      <td>${fmtPrice(sym, p.current_price)}</td>
       <td>${pct(p.change_pct)}</td>
-      <td class="green">${num(p.take_profit_price, p.take_profit_price < 1000 ? 2 : 0)}</td>
-      <td class="red">${num(p.stop_loss_price, p.stop_loss_price < 1000 ? 2 : 0)}</td>
+      <td class="green">${fmtPrice(sym, p.take_profit_price)}</td>
+      <td class="red">${fmtPrice(sym, p.stop_loss_price)}</td>
       <td class="muted">${p.signals?.rsi != null ? Number(p.signals.rsi).toFixed(1) : '—'}</td>
       <td>${badge(p.signal_text)}</td>
     </tr>`).join('');
@@ -198,10 +219,9 @@ function renderWatching(data) {
       ? `<span class="bar-wrap"><span class="bar" style="width:${wp}%"></span></span> <span class="muted">${wp}%</span>`
       : `<span class="green">완료</span>`;
     const closed = !w.market_open ? ' <span class="muted">(장 마감)</span>' : '';
-    const price = w.current_price;
     return `<tr>
       <td class="bold">${sym}${closed}</td>
-      <td>${price != null ? num(price, price < 1000 ? 2 : 0) : '—'}</td>
+      <td>${fmtPrice(sym, w.current_price)}</td>
       <td class="muted">${w.signals?.rsi != null ? Number(w.signals.rsi).toFixed(1) : '—'}</td>
       <td>${badge(w.signal_text)}</td>
       <td>${warmupHtml}</td>
@@ -256,9 +276,9 @@ function renderOrders(list) {
     const isBuy = o.side === 'BUY';
     const sideBadge = `<span class="badge ${isBuy ? 'badge-buy' : 'badge-sell'}">${isBuy ? '매수' : '매도'}</span>`;
     const time = (o.created_at || '').replace('T', ' ').split('.')[0].split(' ')[1] || o.created_at || '—';
-    const price = o.price ? num(parseFloat(o.price), parseFloat(o.price) < 1000 ? 2 : 0) : '시장가';
+    const price = o.price ? fmtPrice(o.symbol, parseFloat(o.price)) : '시장가';
     const pnlCell = hasPnl
-      ? `<td>${o.pnl != null ? pct(o.pnl_pct) + ' <span class="muted">('+num(o.pnl)+'원)</span>' : '<span class="muted">—</span>'}</td>`
+      ? `<td>${fmtPnl(o.symbol, o.pnl, o.pnl_pct)}</td>`
       : '';
     return `<tr>
       <td class="muted">${time}</td>

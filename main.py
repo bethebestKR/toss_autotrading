@@ -9,6 +9,8 @@ from core.toss_client import TossClient
 from core.stock_universe import search, update_kr_stocks
 from core import status_server
 from strategies.strategy1_technical import Strategy1
+from strategies.stock_scanner import StockScanner
+from strategies.trade_analyzer import print_report, suggest_params, generate_report
 
 load_dotenv()
 
@@ -44,12 +46,13 @@ def _pick_symbol(query: str) -> str | None:
         print(f"  1~{len(results)} 사이 숫자를 입력하세요.")
 
 
-def select_symbols_interactive() -> list[str]:
-    """실행 전 종목 선택 프롬프트."""
+def select_symbols_interactive() -> tuple[list[str], bool]:
+    """실행 전 종목 선택. 빈 엔터면 스캐너 모드 진입 여부 묻기."""
     print("\n=== 종목 선택 ===")
-    print("한글 이름, 영문 이름, 또는 종목코드 입력 (빈 엔터 → 완료, 'krx' → 국내 종목 업데이트)\n")
+    print("한글 이름·영문명·종목코드 입력 (빈 엔터 → 완료, 'scan' → 스캐너 자동 선별 모드, 'krx' → 국내 종목 업데이트)\n")
 
     symbols: list[str] = []
+    scanner_mode = False
 
     while True:
         try:
@@ -60,15 +63,17 @@ def select_symbols_interactive() -> list[str]:
         if not raw:
             break
 
+        if raw.lower() == 'scan':
+            scanner_mode = True
+            print("  ✓ 스캐너 모드 활성화 — 장 중 자동으로 종목을 선별합니다")
+            break
+
         if raw.lower() == 'krx':
             update_kr_stocks()
             continue
 
         if raw.lower() in ('list', '목록'):
-            if symbols:
-                print(f"  현재 선택: {', '.join(symbols)}")
-            else:
-                print("  선택된 종목 없음")
+            print(f"  현재 선택: {', '.join(symbols) or '없음'}")
             continue
 
         symbol = _pick_symbol(raw)
@@ -77,17 +82,18 @@ def select_symbols_interactive() -> list[str]:
         elif symbol in symbols:
             print(f"  이미 추가된 종목: {symbol}")
 
-    if not symbols:
-        # .env 기본값 사용
+    if not symbols and not scanner_mode:
         symbols = [s.strip() for s in os.getenv("STRATEGY1_SYMBOLS", "005930").split(",")]
         print(f"  입력 없음 — .env 기본값 사용: {symbols}")
 
-    return symbols
+    return symbols, scanner_mode
 
 
 def _input_listener(strategy: Strategy1):
-    """실행 중 종목 추가/제거 입력 처리 (백그라운드 스레드)."""
-    print("\n[실행 중 명령어] add <종목명> | remove <종목명> | list | 엔터 무시\n")
+    """실행 중 명령어 처리 (백그라운드 스레드)."""
+    cmds = "add <종목> | remove <종목> | list | report [일수] | suggest | watchlog | 엔터 무시"
+    print(f"\n[실행 중 명령어] {cmds}\n")
+
     while True:
         try:
             raw = input().strip()
@@ -98,7 +104,7 @@ def _input_listener(strategy: Strategy1):
             continue
 
         parts = raw.split(maxsplit=1)
-        cmd = parts[0].lower()
+        cmd   = parts[0].lower()
 
         if cmd in ('add', '추가') and len(parts) == 2:
             symbol = _pick_symbol(parts[1])
@@ -124,8 +130,32 @@ def _input_listener(strategy: Strategy1):
         elif cmd in ('list', '목록'):
             print(f"  현재 종목: {strategy.symbols}")
 
+        elif cmd == 'report':
+            days = int(parts[1]) if len(parts) == 2 else 30
+            print_report("strategy1", days=days)
+
+        elif cmd == 'suggest':
+            report = generate_report("strategy1", days=30)
+            sug    = suggest_params(report, strategy.cfg)
+            print("\n[파라미터 조정 제안]")
+            for k, v in sug.items():
+                print(f"  {k}: {v}")
+            print()
+
+        elif cmd == 'watchlog':
+            from core import db as _db
+            logs = _db.get_watchlist_log(limit=10)
+            print("\n[watchlist 변경 이력]")
+            for l in logs:
+                print(f"  {l['logged_at']}  {l['action']:6s}  {l['symbol']}  점수 {l['score'] or '-'}  ({l['reason'] or '-'})")
+            print()
+
+        elif cmd == 'stop':
+            print("  [비상정지 수동 발동]")
+            strategy._emergency_stop = True
+
         else:
-            print("  명령어: add <종목명> | remove <종목명> | list")
+            print(f"  명령어: {cmds}")
 
 
 def main():
@@ -136,10 +166,22 @@ def main():
     accounts = client.get_accounts()
     print("계좌:", accounts)
 
-    symbols = select_symbols_interactive()
-    print(f"\n전략1 대상 종목: {symbols}")
+    symbols, scanner_mode = select_symbols_interactive()
+    print(f"\n전략1 대상 종목: {symbols or '(스캐너가 자동 선별)'}")
 
     strategy = Strategy1(client=client, symbols=symbols)
+
+    claude_on = strategy.cfg.get("use_claude", False)
+    if claude_on:
+        print(f"  [Claude AI] 활성화 — {strategy.cfg.get('claude_model')}")
+        print(f"  [Claude AI] 매수/매도 신호 발생 시 Claude가 최종 판단 (손절은 즉시 실행)")
+    else:
+        print("  [Claude AI] 비활성화 — Python 규칙으로만 매매")
+
+    # Phase 2 — 스캐너 모드
+    if scanner_mode:
+        scanner = StockScanner(client=client, strategy=strategy)
+        scanner.start()
 
     listener = threading.Thread(target=_input_listener, args=(strategy,), daemon=True)
     listener.start()
@@ -151,6 +193,8 @@ def main():
             time.sleep(1)
     except KeyboardInterrupt:
         print("\n종료")
+        # Phase 3 — 종료 시 자동 분석 리포트
+        print_report("strategy1", days=1)
         sys.exit(0)
 
 
