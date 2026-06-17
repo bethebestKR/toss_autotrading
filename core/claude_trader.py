@@ -114,6 +114,39 @@ def fmt_trades(symbol: str, trades: list[dict]) -> str:
     return f"[{symbol} 체결] 거래량비율:{vol_ratio:.1f}x({surge}) 체결가추세:{trend_str}"
 
 
+def fmt_volatility(symbol: str, candle_data: dict) -> str:
+    """캔들 데이터 → ATR(14) + 최대변동폭 계산 → Claude용 텍스트.
+    stop_loss/take_profit 판단 근거로 사용."""
+    candles = candle_data.get("candles", [])
+    if len(candles) < 2:
+        return f"[{symbol} 변동성] 데이터 부족"
+
+    trs = []
+    for i in range(1, len(candles)):
+        high       = float(candles[i].get("highPrice", 0) or 0)
+        low        = float(candles[i].get("lowPrice",  0) or 0)
+        prev_close = float(candles[i - 1].get("closePrice", 0) or 0)
+        if prev_close == 0 or high == 0:
+            continue
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        trs.append(tr)
+
+    if not trs:
+        return f"[{symbol} 변동성] 계산 불가"
+
+    atr14      = sum(trs[-14:]) / min(14, len(trs))
+    max_range  = max(trs)
+    last_price = float(candles[-1].get("closePrice", 0) or 1)
+    atr_pct    = atr14 / last_price * 100
+    max_pct    = max_range / last_price * 100
+
+    return (
+        f"[{symbol} 변동성] "
+        f"ATR(14):{atr14:.0f}({atr_pct:.2f}%) "
+        f"최대변동폭:{max_range:.0f}({max_pct:.2f}%)"
+    )
+
+
 def fmt_orderbook(symbol: str, ob_data: dict) -> str:
     """호가 dict → Claude용 텍스트 (매수/매도 압력 요약)."""
     bids = ob_data.get("bids", [])
@@ -145,7 +178,7 @@ _DECISION_SYSTEM = """당신은 주식 자동매매 시스템의 AI 트레이더
 - BUY: 캔들 추세·거래량 급증·호가 매수 우세가 겹칠 때. 시장 하락 중이면 BUY 보수적으로
 - SELL: 보유 종목의 하락 추세 확인 또는 목표가 도달 시
 - HOLD: 신호 불분명하거나 호가·시장 방향이 반대일 때
-- BUY 시 종목 변동성에 맞게 stop_loss(0.5~5.0%)와 take_profit(1.0~10.0%)을 설정. 변동성 큰 종목은 여유있게, 안정적 종목은 타이트하게.
+- BUY 시 ATR(14)을 참고해 stop_loss는 ATR의 1.5~2.5배(%, 범위 0.5~5.0), take_profit은 ATR의 3~5배(%, 범위 1.0~10.0)로 설정. ATR이 없으면 변동성 패턴으로 추정.
 모든 종목에 대한 결정을 decisions 배열에 포함하세요."""
 
 _ANALYZE_SYSTEM = """당신은 주식 자동매매 시스템의 학습 분석가입니다.
@@ -159,6 +192,16 @@ _ANALYZE_SYSTEM = """당신은 주식 자동매매 시스템의 학습 분석가
 - SELL: 이 시점에서 매도해야 했음
 - AVOID: 이 상황에서 매수를 피해야 함 (손실 패턴)"""
 
+_BATCH_ANALYZE_SYSTEM = """당신은 주식 자동매매 시스템의 학습 분석가입니다.
+여러 건의 완료된 거래 결과를 종합 분석하여 미래 전략에 반영할 핵심 규칙 하나를 추출합니다.
+
+응답은 반드시 다음 JSON 형식으로만 출력하세요 (다른 텍스트 없이):
+{"category": "BUY" | "SELL" | "AVOID", "rule": "[규칙ID][신뢰도: 높음|중간|낮음] 규칙 내용. 근거: 패턴 통계 요약"}
+
+규칙 ID 형식: B/S/A + 3자리 숫자 (예: B001, S002, A003)
+여러 거래를 종합해 가장 통계적으로 신뢰할 수 있는 패턴 하나만 추출하세요.
+단일 거래의 우연한 결과가 아닌 반복적으로 나타나는 패턴에 집중하세요."""
+
 
 def ask_trade_decision(candles_by_symbol: dict, strategy_rules: str,
                        model: str = "claude-sonnet-4-6",
@@ -170,6 +213,10 @@ def ask_trade_decision(candles_by_symbol: dict, strategy_rules: str,
         client = _get_client()
         candle_text = "\n\n".join(
             fmt_candles(sym, data) for sym, data in candles_by_symbol.items()
+        )
+
+        vol_text = "\n\n## 종목별 변동성 (ATR)\n" + "\n".join(
+            fmt_volatility(sym, data) for sym, data in candles_by_symbol.items()
         )
 
         ob_text = ""
@@ -192,6 +239,7 @@ def ask_trade_decision(candles_by_symbol: dict, strategy_rules: str,
             f"현재 보유 전략 규칙:\n{strategy_rules}\n\n---\n"
             f"아래 종목들의 데이터를 분석하여 각 종목의 매매 결정을 내려주세요.\n\n"
             f"{candle_text}"
+            f"{vol_text}"
             f"{ob_text}"
             f"{trade_text}"
             f"{market_text}"
@@ -246,4 +294,39 @@ def ask_analyze_trade(symbol: str, buy_price: float, sell_price: float,
         return (category, rule) if rule else None
     except Exception as e:
         print(f"[Claude] ask_analyze_trade 오류: {e}")
+        return None
+
+
+def ask_batch_analyze_trades(trade_records: list[dict], strategy_rules: str,
+                             model: str = "claude-sonnet-4-6") -> tuple[str, str] | None:
+    """N건 거래 결과 일괄 분석 → (category, rule_text) 반환. 실패 시 None."""
+    try:
+        client = _get_client()
+        lines = []
+        for i, t in enumerate(trade_records, 1):
+            result_str = f"{'수익' if t['pnl_pct'] >= 0 else '손실'} {t['pnl_pct']:+.2f}%"
+            lines.append(f"{i}. {t['symbol']} | {result_str} | 매도이유: {t['exit_reason']}")
+        prompt = (
+            f"완료된 {len(trade_records)}건 거래 결과:\n"
+            + "\n".join(lines)
+            + f"\n\n현재 전략 규칙:\n{strategy_rules}\n\n"
+            "이 거래들을 종합해 가장 신뢰도 높은 패턴 규칙 하나를 추출해주세요."
+        )
+        msg = client.messages.create(
+            model=model,
+            max_tokens=300,
+            system=[{"type": "text", "text": _BATCH_ANALYZE_SYSTEM,
+                     "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = msg.content[0].text.strip()
+        match = re.search(r'\{[\s\S]+?\}', text)
+        if not match:
+            raise ValueError("JSON 없음")
+        data = json.loads(match.group())
+        category = data.get("category", "AVOID")
+        rule = data.get("rule", "").strip()
+        return (category, rule) if rule else None
+    except Exception as e:
+        print(f"[Claude] ask_batch_analyze_trades 오류: {e}")
         return None

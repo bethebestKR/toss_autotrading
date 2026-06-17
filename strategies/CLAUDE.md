@@ -72,8 +72,15 @@
 
 ### 자가 학습 전략 파일
 
-`data/claude_strategy.md` — 거래 결과마다 Claude가 규칙 추출·누적.
+`data/claude_strategy.md` — **20건 거래가 버퍼에 쌓이면** Claude가 일괄 분석 → 규칙 1건 추출·누적.
 다음 배치 판단 시 system prompt에 포함되어 과거 학습 반영.
+버퍼 크기: `batch_learn_size` config 키 (기본 20).
+
+> **TODO (데이터 충분히 쌓인 후 처리)**: `claude_strategy.md`가 길어질수록 Claude 호출 토큰이 증가하고
+> `cache_control: ephemeral` 캐시가 파일 변경마다 무효화된다.
+> 대응 방안: 규칙 수 상한(예: 섹션당 30건) 초과 시 Claude가 기존 규칙 중 신뢰도 낮은 것을 제거·통합하는
+> "규칙 정리 배치" 실행. 또는 규칙 파일을 요약 버전(top-N)과 전체 버전으로 분리.
+> 실거래 데이터가 충분히 쌓인 이후 구현 예정.
 
 구조:
 ```

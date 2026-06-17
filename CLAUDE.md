@@ -49,6 +49,22 @@
 
 > 작업이 중단되거나 진행 중인 경우에는 보고하지 않는다. 명확히 완료된 작업에만 작성한다.
 
+## Git Hooks
+
+`.git/hooks/pre-push` — push 직전 자동 실행되는 스크립트.
+
+- `scripts/update_readme.py`를 호출해 README.md의 동적 섹션(마지막 업데이트 시각, 총 커밋 수, 마지막 커밋 메시지) 갱신
+- README가 변경됐으면 `chore: README 자동 업데이트` 커밋을 자동 생성한 뒤 push 진행
+- `.git/hooks/`는 git 추적 대상이 아님 — clone 후 새 환경 세팅 시 훅을 다시 복사하고 `chmod +x` 해야 한다
+
+훅을 수동으로 다시 설치할 경우:
+```bash
+cp scripts/pre-push-hook .git/hooks/pre-push  # 훅 파일을 scripts/에 백업해두는 경우
+chmod +x .git/hooks/pre-push
+```
+
+> README의 동적 섹션은 `<!-- DYNAMIC:xxx --> ... <!-- /DYNAMIC -->` 패턴으로 표시돼 있다. 직접 수정하지 말 것 — push 시 덮어씌워진다.
+
 ## GitHub 푸시 규칙
 
 - **명시적으로 요청할 때만** push한다. 작업 완료 후 자동으로 push하지 않는다.

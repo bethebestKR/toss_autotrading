@@ -45,6 +45,7 @@ DEFAULT_CONFIG = {
     "claude_min_confidence": 0.65,
     "decision_interval":  30,   # 몇 초(틱)마다 Claude 배치 결정
     "max_symbols":        10,   # Claude에 한 번에 넘길 최대 종목 수
+    "closing_buffer_min": 10,  # 장 마감 N분 전 신규 매수 차단 + 보유 포지션 강제 청산
 }
 
 
@@ -96,6 +97,27 @@ def _is_opening_period(symbol: str) -> bool:
         from datetime import time as _t
         return _t(9, 0) <= now < _t(9, 15)
     return False  # 미국은 서머타임 영향으로 단순 시간 비교 불가 — 추후 개선
+
+
+def _is_closing_soon(client: TossClient, symbol: str, buffer_min: int) -> bool:
+    """정규장 마감 buffer_min분 전이면 True — 익일 갭다운 방지 강제 청산 기준."""
+    now = datetime.now(KST)
+    try:
+        if _is_us(symbol):
+            cal     = _get_calendar(client, "us")
+            regular = cal["today"].get("regularMarket")
+        else:
+            cal     = _get_calendar(client, "kr")
+            regular = cal["today"].get("integrated", {}).get("regularMarket")
+
+        if not regular or not regular.get("endTime"):
+            return False
+
+        end       = datetime.fromisoformat(regular["endTime"])
+        remaining = (end - now).total_seconds()
+        return 0 <= remaining <= buffer_min * 60
+    except Exception:
+        return False
 
 
 def _fetch_market_trend(client: TossClient, symbols: list[str]) -> dict:
@@ -157,6 +179,8 @@ class Strategy1:
         self._decision_future: Future | None = None
         self._decision_tick: int = 0
         self._last_market_context: dict = {}
+        self._trade_buffer: list[dict] = []         # 배치 학습용 거래 버퍼
+        self._batch_size: int = self.cfg.get("batch_learn_size", 20)
 
         if self.cfg.get("use_claude", True) and not os.environ.get("ANTHROPIC_API_KEY"):
             print("[경고] use_claude=True이지만 ANTHROPIC_API_KEY가 없습니다. .env를 확인하세요.")
@@ -201,6 +225,14 @@ class Strategy1:
             if symbol in price_map:
                 self._check_position(symbol, price_map[symbol])
 
+        # 장 마감 N분 전 — 보유 포지션 강제 청산
+        closing_min = self.cfg["closing_buffer_min"]
+        for symbol in list(self._positions.keys()):
+            if _is_closing_soon(self.client, symbol, closing_min):
+                if symbol in price_map:
+                    print(f"[strategy1] {symbol} 장 마감 {closing_min}분 전 — 강제 청산")
+                    self._do_sell(symbol, price_map[symbol], f"장 마감 {closing_min}분 전 강제 청산")
+
         # decision_interval초마다 Claude 배치 결정 제출
         self._decision_tick += 1
         if (self._decision_tick >= self.cfg["decision_interval"]
@@ -228,34 +260,37 @@ class Strategy1:
         orderbooks_by_symbol: dict = {}
         trades_by_symbol: dict = {}
 
-        with _TPE(max_workers=len(symbols) * 3 + 2) as ex:
+        # Phase 1 — 캔들 (MARKET_DATA_CHART 그룹, 한도 5)
+        # max_workers=4 로 동시 콜을 한도 미만으로 제한
+        with _TPE(max_workers=4) as ex:
             candle_futs = {s: ex.submit(self.client.get_candles, s, "1m", 30) for s in symbols}
-            ob_futs     = {s: ex.submit(self.client.get_orderbook, s) for s in symbols}
-            trade_futs  = {s: ex.submit(self.client.get_trades, s, 50) for s in symbols}
-            market_fut  = ex.submit(_fetch_market_trend, self.client, symbols)
-
             for s, f in candle_futs.items():
                 try:
-                    candles_by_symbol[s] = f.result(timeout=10)
+                    candles_by_symbol[s] = f.result(timeout=15)
                 except Exception as e:
                     print(f"[strategy1] {s} 캔들 조회 실패: {e}")
 
+        # Phase 2 — 호가·체결 (MARKET_DATA 그룹, 한도 10)
+        # max_workers=4 → 최대 4콜 동시, prices 폴링(1콜) 여유분 확보
+        with _TPE(max_workers=4) as ex:
+            ob_futs    = {s: ex.submit(self.client.get_orderbook, s) for s in symbols}
+            trade_futs = {s: ex.submit(self.client.get_trades, s, 50) for s in symbols}
             for s, f in ob_futs.items():
                 try:
-                    orderbooks_by_symbol[s] = f.result(timeout=5)
+                    orderbooks_by_symbol[s] = f.result(timeout=10)
                 except Exception:
                     pass
-
             for s, f in trade_futs.items():
                 try:
-                    trades_by_symbol[s] = f.result(timeout=5)
+                    trades_by_symbol[s] = f.result(timeout=10)
                 except Exception:
                     pass
 
-            try:
-                market_context = market_fut.result(timeout=10)
-            except Exception:
-                market_context = {}
+        # Phase 3 — 시장 방향 (MARKET_DATA_CHART 그룹, 2콜 — 캔들과 분리해 여유 확보)
+        try:
+            market_context = _fetch_market_trend(self.client, symbols)
+        except Exception:
+            market_context = {}
 
         if not candles_by_symbol:
             return [], {}, {}
@@ -305,8 +340,11 @@ class Strategy1:
 
             if action == "BUY" and conf >= min_conf:
                 if symbol not in self._positions and symbol in price_map:
-                    if _is_opening_period(symbol):       # 장 시작 15분 차단 (3번)
+                    if _is_opening_period(symbol):
                         print(f"[strategy1] {symbol} 장 시작 쿨다운 — BUY 건너뜀")
+                        continue
+                    if _is_closing_soon(self.client, symbol, self.cfg["closing_buffer_min"]):
+                        print(f"[strategy1] {symbol} 장 마감 임박 — BUY 차단")
                         continue
                     # 동적 손절/익절 클램핑 (2번)
                     sl = _clamp(d.get("stop_loss"),  _SL_MIN, _SL_MAX, self.cfg["stop_loss_pct"])
@@ -431,33 +469,37 @@ class Strategy1:
         self._session_realized_pnl += (price - pos["buy_price"]) * qty
         self.engine.sell(symbol=symbol, quantity=str(qty), current_price=price)
 
-        # 거래 분석 비동기 제출 (블로킹 없음)
-        self._executor.submit(
-            self._analyze_and_save,
-            symbol, pos["buy_price"], price, pnl_pct, reason,
-            pos.get("candle_snapshot", ""),
-        )
+        # 배치 학습 버퍼에 거래 기록
+        self._trade_buffer.append({
+            "symbol":          symbol,
+            "buy_price":       pos["buy_price"],
+            "sell_price":      price,
+            "pnl_pct":         pnl_pct,
+            "exit_reason":     reason,
+            "candle_snapshot": pos.get("candle_snapshot", ""),
+        })
+        print(f"[학습] 버퍼 {len(self._trade_buffer)}/{self._batch_size}건")
+
+        if len(self._trade_buffer) >= self._batch_size:
+            batch = self._trade_buffer.copy()
+            self._trade_buffer.clear()
+            self._executor.submit(self._batch_analyze_and_save, batch)
+
         del self._positions[symbol]
 
-    def _analyze_and_save(self, symbol: str, buy_price: float, sell_price: float,
-                          pnl_pct: float, exit_reason: str, candle_snapshot: str):
-        """거래 결과를 Claude에게 분석시켜 전략 파일에 저장. executor에서 실행."""
-        from core.claude_trader import load_strategy_rules, append_strategy_rule, ask_analyze_trade
+    def _batch_analyze_and_save(self, trade_records: list[dict]):
+        """N건 거래 결과를 Claude에게 일괄 분석시켜 규칙 저장. executor에서 실행."""
+        from core.claude_trader import load_strategy_rules, append_strategy_rule, ask_batch_analyze_trades
         strategy_rules = load_strategy_rules()
-        result = ask_analyze_trade(
-            symbol=symbol,
-            buy_price=buy_price,
-            sell_price=sell_price,
-            pnl_pct=pnl_pct,
-            exit_reason=exit_reason,
-            candle_snapshot=candle_snapshot,
+        result = ask_batch_analyze_trades(
+            trade_records=trade_records,
             strategy_rules=strategy_rules,
             model=self.cfg.get("claude_model", "claude-sonnet-4-6"),
         )
         if result:
             category, rule_text = result
             append_strategy_rule(category, rule_text)
-            print(f"[학습] {symbol} 거래 분석 완료 → [{category}] 규칙 저장")
+            print(f"[학습] {len(trade_records)}건 배치 분석 완료 → [{category}] 규칙 저장")
 
     # ── 대시보드 ─────────────────────────────────────────────────────────────
 
