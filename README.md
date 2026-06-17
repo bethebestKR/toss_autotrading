@@ -9,9 +9,9 @@
 
 | 항목 | 값 |
 |------|-----|
-| 마지막 업데이트 | <!-- DYNAMIC:last_updated -->2026-06-18 01:20 KST<!-- /DYNAMIC --> |
-| 총 커밋 수 | <!-- DYNAMIC:commit_count -->3<!-- /DYNAMIC --> |
-| 마지막 커밋 | <!-- DYNAMIC:last_commit -->feat: Claude 트레이더, 종목 스캐너, 거래 분석기 추가 및 전반적 개선<!-- /DYNAMIC --> |
+| 마지막 업데이트 | <!-- DYNAMIC:last_updated -->2026-06-18 01:22 KST<!-- /DYNAMIC --> |
+| 총 커밋 수 | <!-- DYNAMIC:commit_count -->4<!-- /DYNAMIC --> |
+| 마지막 커밋 | <!-- DYNAMIC:last_commit -->docs: 포트폴리오 README 추가 및 push 시 자동 업데이트 훅 설정<!-- /DYNAMIC --> |
 
 ---
 
