@@ -9,9 +9,9 @@
 
 | 항목 | 값 |
 |------|-----|
-| 마지막 업데이트 | <!-- DYNAMIC:last_updated -->2026-06-18 01:39 KST<!-- /DYNAMIC --> |
-| 총 커밋 수 | <!-- DYNAMIC:commit_count -->6<!-- /DYNAMIC --> |
-| 마지막 커밋 | <!-- DYNAMIC:last_commit -->feat: ATR 기반 손절/익절 개선, 장 마감 강제 청산, 배치 학습 전환<!-- /DYNAMIC --> |
+| 마지막 업데이트 | <!-- DYNAMIC:last_updated -->2026-06-19 10:25 KST<!-- /DYNAMIC --> |
+| 총 커밋 수 | <!-- DYNAMIC:commit_count -->8<!-- /DYNAMIC --> |
+| 마지막 커밋 | <!-- DYNAMIC:last_commit -->feat: Discord 알림, 재무 데이터, 전략2(가치투자) 추가 및 전반 개선<!-- /DYNAMIC --> |
 
 ---
 
