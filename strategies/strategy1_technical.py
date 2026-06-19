@@ -15,6 +15,7 @@ from datetime import datetime, timezone, timedelta
 from core.toss_client import TossClient
 from core.order_engine import OrderEngine
 from core import db
+from core import discord_notifier
 
 KST = timezone(timedelta(hours=9))
 
@@ -181,6 +182,8 @@ class Strategy1:
         self._last_market_context: dict = {}
         self._trade_buffer: list[dict] = []         # 배치 학습용 거래 버퍼
         self._batch_size: int = self.cfg.get("batch_learn_size", 20)
+        self._status_notify_tick: int = 0
+        self._status_notify_interval: int = self.cfg.get("discord_status_interval", 300)
 
         if self.cfg.get("use_claude", True) and not os.environ.get("ANTHROPIC_API_KEY"):
             print("[경고] use_claude=True이지만 ANTHROPIC_API_KEY가 없습니다. .env를 확인하세요.")
@@ -415,6 +418,7 @@ class Strategy1:
         if not self._positions:
             return
         print("[ALERT] 비상 정지 — 전 포지션 청산 중...")
+        discord_notifier.notify_emergency("비상 정지 — 전 포지션 강제 청산")
         try:
             syms = list(self._positions.keys())
             price_list = self.client.get_prices(syms) if not hasattr(self.engine, 'cash') else []
@@ -457,6 +461,7 @@ class Strategy1:
                 "take_profit_pct": tp,
             }
             print(f"[strategy1] {symbol} 매수 완료 — {price:,.2f} × {qty_str}주 | 손절:{sl:.1f}% 익절:{tp:.1f}%")
+            discord_notifier.notify_buy(symbol, price, int(qty_str), sl, tp)
 
     def _do_sell(self, symbol: str, price: float, reason: str):
         if symbol not in self._positions:
@@ -466,6 +471,7 @@ class Strategy1:
         pnl_pct = (price - pos["buy_price"]) / pos["buy_price"] * 100
 
         print(f"[strategy1] {symbol} 매도 — {reason} ({pnl_pct:+.2f}%)")
+        discord_notifier.notify_sell(symbol, price, pnl_pct, reason)
         self._session_realized_pnl += (price - pos["buy_price"]) * qty
         self.engine.sell(symbol=symbol, quantity=str(qty), current_price=price)
 
@@ -553,15 +559,21 @@ class Strategy1:
         total_pnl     = self._session_realized_pnl + unrealized_pnl
         paper_balance = round(self.engine.cash) if hasattr(self.engine, 'cash') else None
 
+        pnl_summary = {
+            "realized":   round(self._session_realized_pnl),
+            "unrealized": round(unrealized_pnl),
+            "total":      round(total_pnl),
+            "balance":    paper_balance,
+        }
         status_server.update({
             "updated_at":    datetime.now(KST).strftime("%H:%M:%S"),
             "positions":     positions,
             "watching":      watching,
             "recent_orders": get_recent_orders(limit=10),
-            "pnl_summary": {
-                "realized":   round(self._session_realized_pnl),
-                "unrealized": round(unrealized_pnl),
-                "total":      round(total_pnl),
-                "balance":    paper_balance,
-            },
+            "pnl_summary":   pnl_summary,
         })
+
+        self._status_notify_tick += 1
+        if self._status_notify_tick >= self._status_notify_interval:
+            self._status_notify_tick = 0
+            discord_notifier.notify_status(positions, pnl_summary)

@@ -20,14 +20,14 @@ def _check_volume_surge(client: TossClient, symbol: str, threshold: float) -> tu
     try:
         trades = client.get_trades(symbol, count=50)
         if len(trades) < 15:
-            return True, 0.0
+            return False, 0.0
         volumes = [float(t["volume"]) for t in trades]
         recent = sum(volumes[:10])
         base   = sum(volumes[10:]) / (len(volumes) - 10) * 10
         ratio  = recent / base if base > 0 else 0.0
         return ratio >= threshold, round(ratio, 2)
     except Exception:
-        return True, 0.0
+        return False, 0.0
 
 
 def _check_orderbook_bias(client: TossClient, symbol: str, min_bid_ratio: float) -> tuple[bool, float]:
@@ -40,7 +40,7 @@ def _check_orderbook_bias(client: TossClient, symbol: str, min_bid_ratio: float)
         ratio   = bid_vol / total if total > 0 else 0.5
         return ratio >= min_bid_ratio, round(ratio, 2)
     except Exception:
-        return True, 0.0
+        return False, 0.0
 
 KST = timezone(timedelta(hours=9))
 
@@ -81,12 +81,13 @@ _US_UNIVERSE = [
 DEFAULT_SCANNER_CONFIG = {
     "scan_interval_sec": 180,     # 스캔 주기 (초)
     "max_watchlist":     10,      # watchlist 최대 종목 수
-    "momentum_min_pct":  0.3,     # 스캔 간격 동안 최소 상승률 (%)
-    "volatility_min_pct": 0.2,    # 최소 변동성 (고가-저가 범위, 캔들 기준 %)
-    "volume_surge_ratio": 1.5,
-    "bid_ratio_min":      0.55,
-    "min_score":          2,      # 편입 최소 점수 (0~4)
-    "exit_score":         1,      # 이 점수 이하면 이탈
+    "momentum_min_pct":  0.15,    # 스캔 간격 동안 최소 상승률 (%)
+    "volatility_min_pct": 0.1,    # 최소 변동성 (고가-저가 범위, 캔들 기준 %)
+    "volume_surge_ratio": 1.2,
+    "bid_ratio_min":      0.52,
+    "min_score":          1,      # 편입 최소 점수 (0~4)
+    "exit_score":         0,      # 이 점수 이하면 이탈
+    "debug":              False,  # True 시 종목별 점수 상세 출력
 }
 
 
@@ -136,6 +137,7 @@ class StockScanner:
         # 장 중인 종목만 필터
         active = [s for s in self._universe if is_market_open(self.client, s)]
         if not active:
+            print(f"[scanner] {now.strftime('%H:%M:%S')} — 장 외 시간, 스캔 스킵 (유니버스 {len(self._universe)}종목)")
             return
 
         # 현재가 일괄 조회 (1 API call)
@@ -154,6 +156,10 @@ class StockScanner:
                 continue
 
             score, reasons = self._score_symbol(symbol, price)
+
+            if self.cfg.get("debug"):
+                reason_str = ", ".join(reasons) if reasons else "조건 미달"
+                print(f"[scanner]   {symbol} {price:.2f} → {score}점 ({reason_str})")
 
             if symbol in self._scanner_added:
                 # 이탈 조건 확인
@@ -174,9 +180,8 @@ class StockScanner:
             if symbol not in self.strategy.symbols:
                 self._add(symbol, score, reason)
 
-        if candidates:
-            top = candidates[0]
-            print(f"[scanner] 스캔 완료 ({now.strftime('%H:%M:%S')}) — 후보 {len(candidates)}건, 편입 {min(len(candidates), max(0, remaining_slots))}건")
+        added_count = min(len(candidates), max(0, remaining_slots))
+        print(f"[scanner] 스캔 완료 ({now.strftime('%H:%M:%S')}) — 활성 {len(active)}종목, 후보 {len(candidates)}건, 편입 {added_count}건")
 
     def _score_symbol(self, symbol: str, price: float) -> tuple[float, list[str]]:
         """0~4점 스코어 계산. 조건별 +1점."""

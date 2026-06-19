@@ -122,6 +122,8 @@ def main():
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--test", action="store_true", help="장 시간 체크 우회 (장 외 시간 테스트용)")
     parser.add_argument("--duration", type=int, default=0, help="N초 후 자동 종료 (0=무제한)")
+    parser.add_argument("--scan", action="store_true", help="스캐너 자동 선별 모드 (종목 입력 생략)")
+    parser.add_argument("--cash", type=float, default=0, help="가상 투자금액 (0이면 대화형 입력)")
     args, _ = parser.parse_known_args()
 
     if args.test:
@@ -135,10 +137,14 @@ def main():
     status_server.start(port=8765)
     client = TossClient()
 
-    virtual_cash = _ask_cash()
+    virtual_cash = args.cash if args.cash > 0 else _ask_cash()
     print(f"\n가상 투자금: {virtual_cash:,.0f}원\n")
 
-    symbols, scanner_mode = select_symbols_interactive()
+    if args.scan:
+        symbols, scanner_mode = [], True
+        print("스캐너 모드 — 종목 자동 선별")
+    else:
+        symbols, scanner_mode = select_symbols_interactive()
     print(f"\n대상 종목: {symbols or '(스캐너가 자동 선별)'}")
 
     # --test: 20초마다 Claude 결정 (기본 60초 단축)
@@ -156,7 +162,8 @@ def main():
         print("  [Claude AI] 비활성화 — Python 규칙으로만 매매합니다")
 
     if scanner_mode:
-        scanner = StockScanner(client=client, strategy=strategy)
+        scanner_cfg = {"debug": args.test, "scan_interval_sec": 30 if args.test else 180}
+        scanner = StockScanner(client=client, strategy=strategy, config=scanner_cfg)
         scanner.start()
 
     # 백그라운드: 10초마다 상태 출력

@@ -1,7 +1,8 @@
 # strategies/
 
 3가지 매매 전략. 각 전략은 `core/order_engine.py`의 `OrderEngine`으로 주문을 실행한다.
-**외부 재무 데이터 API(DART, yfinance 등)는 사용하지 않는다. 토스 API만 사용.**
+**전략 1**: 토스 API만 사용 (캔들·호가·체결 데이터).
+**전략 2·3**: 재무 데이터는 `core/financial_data.py` 경유 (KR: DART API / US: yfinance).
 
 ## 전략 1 — Claude AI 직접 판단 (`strategy1_technical.py`) ✅ Phase 1~4 완료
 
@@ -125,14 +126,56 @@
 
 ---
 
-## 전략 2 — 가치 분석 중장기 (`strategy2_fundamental.py`) 🔜
+## 전략 2 — 가치 분석 중장기 (`strategy2_fundamental.py`) ✅ 구현 완료
 
-- 목적: 기업 공시 문서 분석 → 가치 종목 추천 → 2주 이상 보유
-- 방식: 사용자가 재무 문서 제공 → Claude 분석 → 종목 추천 → 승인 후 토스 API 매수
-- 분석 지표: 매출성장률, 영업이익률, 순이익, ROE, 부채비율
+- 목적: DART/yfinance 재무 데이터 → Claude 가치 평가 → 상위 N종목 매수 → 2주~3개월 보유
+- 데이터: `core/financial_data.py`의 `get_financials_batch()`로 KR/US 동시 수집
+- KR: dart-fss corp_code 조회 + DART REST API `fnlttSinglAcntAll` (연결>개별 우선)
+- US: yfinance `income_stmt`, `balance_sheet`, `info`
+- 분석 지표: 매출성장률, 영업이익률, 순이익률, ROE, 부채비율, PER, PBR
+- Claude 출력: symbol, action, target_pct, stop_pct, hold_weeks, score, reason (JSON 배열)
+- 포지션 모니터링: `run_monitor_once()` — 목표(+15%)/손절(-7%) 체크
+- 필요 환경변수: `DART_API_KEY` (.env에 추가 필요)
+
+### `Strategy2` 클래스 주요 메서드
+
+| 메서드 | 설명 |
+|--------|------|
+| `analyze_universe(symbols)` | 재무 수집 → Claude 분석 → 추천 목록 반환 |
+| `execute_buy(rec, price)` | 추천 항목 매수 실행 (사용자 확인 후 호출) |
+| `run_monitor_once()` | 보유 포지션 목표가/손절 체크 |
+| `print_status()` | 보유 현황 콘솔 출력 |
+
+### DEFAULT_CONFIG
+
+| 키 | 기본값 | 설명 |
+|----|--------|------|
+| `target_profit_pct` | 15.0 | 목표 수익률 (%) |
+| `stop_loss_pct` | 7.0 | 손절 기준 (%) |
+| `max_positions` | 5 | 동시 최대 보유 종목 수 |
+| `max_position_pct` | 0.20 | 종목당 최대 자금 비율 |
+| `financial_cache_days` | 7 | 재무 데이터 캐시 TTL (일) |
+| `top_n` | 3 | Claude 추천 최대 종목 수 |
+
+---
+
+## `core/financial_data.py` — 재무 데이터 수집 모듈 ✅
+
+- `get_financials(symbol, cache_days=7)` → dict | None
+- `get_financials_batch(symbols, cache_days=7)` → {symbol: dict}
+- `fmt_financials(data)` → Claude 프롬프트용 텍스트
+- 캐시: `data/trading.db`의 `financial_cache` 테이블
+
+출력 표준 필드:
+`symbol, name, market, currency, revenue, revenue_prev, revenue_growth,
+operating_income, net_income, total_equity, total_assets, total_liabilities,
+operating_margin, net_margin, roe, debt_ratio, per, pbr, market_cap,
+fiscal_year, as_of, source`
+
+---
 
 ## 전략 3 — 퀀트팩터 장기 (`strategy3_quant.py`) 🔜
 
 - 목적: 팩터 복합 점수로 상위 N종목 선별, 분기 리밸런싱
 - 모멘텀: 토스 API 일봉 캔들 6~12개월 수익률
-- Value/Quality: 사용자 제공 재무 문서 추출
+- Value/Quality: `core/financial_data.py`로 자동 수집 (strategy2와 공유)

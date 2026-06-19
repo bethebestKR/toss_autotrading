@@ -64,6 +64,12 @@ def init_db():
                 indicators TEXT,
                 logged_at TEXT DEFAULT (datetime('now', 'localtime'))
             );
+
+            CREATE TABLE IF NOT EXISTS financial_cache (
+                symbol     TEXT PRIMARY KEY,
+                data_json  TEXT NOT NULL,
+                fetched_at TEXT NOT NULL
+            );
         """)
         # Phase 3 — 트레이드 신호 태깅 컬럼 (없는 경우에만 추가)
         for col in [
@@ -183,6 +189,37 @@ def get_watchlist_log(limit: int = 20) -> list[dict]:
             (limit,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Financial Cache ────────────────────────────────────────────────────────────
+
+def get_financial_cache(symbol: str, max_age_days: int = 7) -> dict | None:
+    """재무 데이터 캐시 조회. max_age_days 이내 데이터만 반환."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT data_json, fetched_at FROM financial_cache WHERE symbol=?",
+            (symbol,),
+        ).fetchone()
+    if not row:
+        return None
+    fetched = row["fetched_at"]
+    with get_conn() as conn:
+        expired = conn.execute(
+            "SELECT 1 WHERE ? < datetime('now', 'localtime', ? || ' days')",
+            (fetched, f"-{max_age_days}"),
+        ).fetchone()
+    if expired:
+        return None   # TTL 만료
+    return json.loads(row["data_json"])
+
+
+def set_financial_cache(symbol: str, data: dict):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO financial_cache (symbol, data_json, fetched_at) "
+            "VALUES (?, ?, datetime('now', 'localtime'))",
+            (symbol, json.dumps(data, ensure_ascii=False)),
+        )
 
 
 def get_performance(strategy: str) -> list[dict]:
